@@ -27,7 +27,7 @@ try:
     HAS_FLASH_ATTN = True
 except ImportError:
     HAS_FLASH_ATTN = False
-    print("⚠️ FlashAttention2 not available, using PyTorch SDPA")
+    print("FlashAttention2 not available, using PyTorch SDPA")
 
 
 # ============================================================================
@@ -149,7 +149,7 @@ class GradientMonitor:
     def print_stats(self, epoch, step):
         """Print monitoring statistics"""
         if len(self.grad_norms) > 0:
-            print(f"\n📊 [Epoch {epoch}, Step {step}] Gradient Stats:")
+            print(f"\n [Epoch {epoch}, Step {step}] Gradient Stats:")
             print(f"  Grad Norm: {self.grad_norms[-1]:.4f}")
             print(f"  Param Norm: {self.param_norms[-1]:.4f}")
             print(f"  Grad/Param Ratio: {self.grad_norms[-1]/max(self.param_norms[-1], 1e-8):.4f}")
@@ -785,10 +785,10 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, config, epoch, moni
             
             # Check for explosion
             if monitor.check_explosion(threshold=50.0):
-                print(f"\n🚨 GRADIENT EXPLOSION DETECTED at epoch {epoch}, step {batch_idx}")
+                print(f"\n GRADIENT EXPLOSION DETECTED at epoch {epoch}, step {batch_idx}")
                 monitor.print_stats(epoch, batch_idx)
                 if grad_stats:
-                    print("\n⚠️ Problematic layers:")
+                    print("\n Problematic layers:")
                     for name, stats in grad_stats.items():
                         print(f"  {name}: norm={stats['grad_norm']:.4f}, has_nan={stats['has_nan']}, has_inf={stats['has_inf']}")
             
@@ -867,14 +867,14 @@ def main():
     
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"\n📊 Model Statistics:")
+    print(f"\n Model Statistics:")
     print(f"  Parameters: {num_params:,}")
     print(f"  Embed dim: {model_config.embed_dim}")
     print(f"  Depth: {model_config.depth}")
     print(f"  Heads: {model_config.num_heads}")
     
     # Data loaders
-    print(f"\n📚 Loading CIFAR-100...")
+    print(f"\n Loading CIFAR-100...")
     train_loader, val_loader = get_cifar100_loaders(train_config)
     print(f"  Train samples: {len(train_loader.dataset)}")
     print(f"  Val samples: {len(val_loader.dataset)}")
@@ -909,7 +909,7 @@ def main():
     # Gradient monitor
     monitor = GradientMonitor()
     
-    print(f"\n⚙️ Training Configuration:")
+    print(f"\n Training Configuration:")
     print(f"  Epochs: {train_config.epochs}")
     print(f"  Warmup epochs: {train_config.warmup_epochs}")
     print(f"  Base LR: {train_config.base_lr}")
@@ -919,7 +919,7 @@ def main():
     print(f"  Gradient accumulation: {train_config.gradient_accumulation_steps}")
     
     # Training loop
-    print(f"\n🚀 Starting training...")
+    print(f"\n Starting training...")
     print("="*80)
     
     best_acc = 0
@@ -957,7 +957,7 @@ def main():
                     'train_config': train_config,
                     'model_config': model_config,
                 }, f"{train_config.checkpoint_dir}/best_model.pth")
-                print(f"✅ Best model saved! Val Acc: {best_acc:.2f}%\n")
+                print(f" Best model saved! Val Acc: {best_acc:.2f}%\n")
         
         # Save checkpoint
         if epoch % train_config.save_freq == 0:
@@ -968,7 +968,7 @@ def main():
                 'scheduler_state_dict': scheduler.state_dict(),
             }, f"{train_config.checkpoint_dir}/checkpoint_epoch_{epoch}.pth")
     
-    print(f"\n🎉 Training complete! Best Val Acc: {best_acc:.2f}%")
+    print(f"\n Training complete! Best Val Acc: {best_acc:.2f}%")
 
 
 if __name__ == "__main__":
