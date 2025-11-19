@@ -90,6 +90,7 @@ class TrainingConfig:
     
     # AMP & Compilation
     use_amp: bool = True
+    amp_dtype: str = 'bfloat16'  # 'float16' or 'bfloat16' - bf16 has better numerical stability
     use_compile: bool = True
     compile_mode: str = 'default'  # 'default', 'reduce-overhead', 'max-autotune'
     
@@ -572,7 +573,7 @@ def efficient_attention(q, k, v, dropout_p=0.0, training=True):
         HAS_FLASH_ATTN
         and q.device.type == 'cuda'
         and training
-        and (q.dtype in (torch.float16, torch.bfloat16))
+        and q.dtype in (torch.float16, torch.bfloat16)
     )
 
     if use_flash:
@@ -881,7 +882,7 @@ class DepthwiseConv2d(nn.Module):
             kernel_size=kernel_size, 
             padding=kernel_size // 2, 
             groups=dim,
-            bias=True  # Add bias for stability
+            bias=False  # No bias - prevents explosion, LayerNorms handle it
         )
         
         # CRITICAL: Proper initialization for depthwise conv
@@ -890,9 +891,6 @@ class DepthwiseConv2d(nn.Module):
         # Scale down by sqrt(groups) to account for depthwise structure
         with torch.no_grad():
             self.dwconv.weight.div_(math.sqrt(dim))
-        
-        if self.dwconv.bias is not None:
-            nn.init.zeros_(self.dwconv.bias)
         
         # Learnable scale parameter for gradual activation
         self.scale = nn.Parameter(torch.ones(1, dim, 1, 1) * 0.1)
@@ -1238,7 +1236,9 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, config, epoch, moni
     for batch_idx, (inputs, targets) in enumerate(loader):
         inputs, targets = inputs.cuda(), targets.cuda()
         
-        with autocast(enabled=config.use_amp):
+        # Use configured AMP dtype (bfloat16 for better stability)
+        amp_dtype = torch.bfloat16 if config.amp_dtype == 'bfloat16' else torch.float16
+        with autocast(enabled=config.use_amp, dtype=amp_dtype):
             outputs = model(inputs)
             loss = criterion(outputs, targets) / config.gradient_accumulation_steps
         
@@ -1246,6 +1246,13 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, config, epoch, moni
         
         if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
             scaler.unscale_(optimizer)
+            
+            # CRITICAL: Per-layer gradient clipping for dwconv to prevent explosion
+            # Clip dwconv gradients more aggressively BEFORE global clipping
+            for name, param in model.named_parameters():
+                if 'dwconv' in name and param.grad is not None:
+                    # Aggressive per-parameter clipping for depthwise convolutions
+                    torch.nn.utils.clip_grad_norm_([param], max_norm=0.1)
             
             # Monitor gradients (detailed every 200 steps)
             detailed = (batch_idx % 200 == 0)
@@ -1259,7 +1266,7 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, config, epoch, moni
                 monitor.print_detailed_stats(epoch, batch_idx, grad_stats, layer_stats)
                 print(f"{'='*100}\n")
             
-            # Gradient clipping
+            # Global gradient clipping
             if config.grad_clip_mode == 'norm':
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
             elif config.grad_clip_mode == 'value':
