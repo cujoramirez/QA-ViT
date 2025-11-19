@@ -561,32 +561,55 @@ class LinformerCompression(nn.Module):
 
 
 def efficient_attention(q, k, v, dropout_p=0.0, training=True):
+    # Quick NaN guard
     if torch.isnan(q).any() or torch.isnan(k).any() or torch.isnan(v).any():
         return torch.zeros_like(q)
-    
-    use_flash = HAS_FLASH_ATTN and q.device.type == 'cuda' and training
-    
+
+    # Only use FlashAttention when available, on CUDA, during training, AND
+    # when tensors are in a supported dtype (fp16 or bfloat16). FlashAttention
+    # extensions typically do not support fp32 and will raise runtime errors.
+    use_flash = (
+        HAS_FLASH_ATTN
+        and q.device.type == 'cuda'
+        and training
+        and (q.dtype in (torch.float16, torch.bfloat16))
+    )
+
     if use_flash:
-        B, H, N_q, D = q.shape
-        target_dtype = q.dtype
-        
-        if k.dtype != target_dtype:
-            k = k.to(target_dtype)
-        if v.dtype != target_dtype:
-            v = v.to(target_dtype)
-        
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-        
-        output = flash_attn_func(q, k, v, dropout_p=dropout_p if training else 0.0, causal=False)
-        output = output.transpose(1, 2)
+        try:
+            B, H, N_q, D = q.shape
+            target_dtype = q.dtype
+
+            if k.dtype != target_dtype:
+                k = k.to(target_dtype)
+            if v.dtype != target_dtype:
+                v = v.to(target_dtype)
+
+            q_t = q.transpose(1, 2)
+            k_t = k.transpose(1, 2)
+            v_t = v.transpose(1, 2)
+
+            output = flash_attn_func(q_t, k_t, v_t, dropout_p=dropout_p if training else 0.0, causal=False)
+            output = output.transpose(1, 2)
+
+        except Exception as e:
+            # If FlashAttention fails for any reason, fall back to PyTorch's
+            # scaled_dot_product_attention implementation. If tensors are in
+            # bf16, cast to fp32 for the fallback and then cast back.
+            if q.dtype == torch.bfloat16:
+                q32 = q.to(torch.float32)
+                k32 = k.to(torch.float32)
+                v32 = v.to(torch.float32)
+                output = F.scaled_dot_product_attention(q32, k32, v32, dropout_p=dropout_p if training else 0.0)
+                output = output.to(torch.bfloat16)
+            else:
+                output = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p if training else 0.0)
     else:
         output = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p if training else 0.0)
-    
+
     if torch.isnan(output).any():
         return torch.zeros_like(output)
-    
+
     return output
 
 
