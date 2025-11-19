@@ -60,7 +60,7 @@ class QAViTConfig:
 class TrainingConfig:
     """Training configuration"""
     # Hardware-specific
-    batch_size: int = 128  # Start conservative for 6GB
+    batch_size: int = 64  # Start conservative for 6GB
     gradient_accumulation_steps: int = 1
     num_workers: int = 4
     pin_memory: bool = True
@@ -285,7 +285,7 @@ def efficient_attention(q, k, v, dropout_p=0.0, training=True):
     
     # Check output
     if torch.isnan(output).any():
-        print("⚠️ NaN detected in attention output!")
+        print("NaN detected in attention output!")
         return torch.zeros_like(output)
     
     return output
