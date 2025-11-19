@@ -91,7 +91,7 @@ class TrainingConfig:
     # AMP & Compilation
     use_amp: bool = True
     amp_dtype: str = 'bfloat16'  # 'float16' or 'bfloat16' - bf16 has better numerical stability
-    use_compile: bool = True
+    use_compile: bool = False
     compile_mode: str = 'default'  # 'default', 'reduce-overhead', 'max-autotune'
     
     # Paths
