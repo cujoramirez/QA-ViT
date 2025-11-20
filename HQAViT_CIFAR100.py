@@ -155,6 +155,30 @@ class ModelEMA:
             if name in model_buffers:
                 ema_buf.copy_(model_buffers[name])
     
+    @torch.no_grad()
+    def compute_distance(self, model: nn.Module):
+        """Compute L2 distance between EMA and model parameters"""
+        param_dist = 0.0
+        buffer_dist = 0.0
+        
+        # Parameter distance
+        ema_params = dict(self.ema.named_parameters())
+        model_params = dict(model.named_parameters())
+        for name, ema_p in ema_params.items():
+            if name in model_params:
+                param_dist += (ema_p - model_params[name]).norm().item() ** 2
+        param_dist = param_dist ** 0.5
+        
+        # Buffer distance (for tracking only)
+        ema_buffers = dict(self.ema.named_buffers())
+        model_buffers = dict(model.named_buffers())
+        for name, ema_buf in ema_buffers.items():
+            if name in model_buffers and ema_buf.dtype == torch.float32:
+                buffer_dist += (ema_buf - model_buffers[name]).norm().item() ** 2
+        buffer_dist = buffer_dist ** 0.5
+        
+        return param_dist, buffer_dist
+    
     def set_decay(self, decay: float):
         """Update decay rate"""
         self.decay = decay
@@ -1619,10 +1643,12 @@ def main():
         if epoch % train_config.eval_freq == 0:
             val_loss, val_acc = validate(model, val_loader)
             
-            # Validate EMA model
+            # Validate EMA model and compute tracking distance
             ema_val_loss, ema_val_acc = 0, 0
+            param_dist, buffer_dist = 0.0, 0.0
             if model_ema is not None:
                 ema_val_loss, ema_val_acc = validate(model_ema.ema, val_loader, use_ema=True)
+                param_dist, buffer_dist = model_ema.compute_distance(model)
             
             epoch_time = time.time() - epoch_start_time
             total_time = time.time() - train_start_time
@@ -1644,6 +1670,12 @@ def main():
             if device.type == 'cuda':
                 current_vram = torch.cuda.max_memory_allocated() / 1024**3
                 print(f"{'Peak VRAM (GB)':<30} {current_vram:>15.2f}")
+            
+            # EMA tracking diagnostics
+            if model_ema is not None:
+                print(f"{'EMA Param Distance':<30} {param_dist:>15.4f}")
+                print(f"{'EMA Buffer Distance':<30} {buffer_dist:>15.4f}")
+                print(f"{'EMA Decay (current)':<30} {model_ema.decay:>15.6f}")
             
             print(f"{'='*100}\n")
             
