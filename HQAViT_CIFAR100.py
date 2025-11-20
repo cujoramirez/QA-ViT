@@ -47,7 +47,7 @@ class HQAViTConfig:
     in_channels: int = 3
     num_classes: int = 100
     embed_dim: int = 192  # d
-    depth: int = 12
+    depth: int = 8
     num_heads: int = 4
     compress_ratio: int = 4
     bottleneck_ratio: int = 2
@@ -138,7 +138,8 @@ class ModelEMA:
     
     @torch.no_grad()
     def update(self, model: nn.Module):
-        """Update EMA parameters"""
+        """Update EMA parameters and buffers"""
+        # Update parameters
         ema_params = dict(self.ema.named_parameters())
         model_params = dict(model.named_parameters())
         
@@ -146,6 +147,13 @@ class ModelEMA:
             if name in model_params:
                 model_p = model_params[name].detach()
                 ema_p.mul_(self.decay).add_(model_p, alpha=1.0 - self.decay)
+        
+        # Keep buffers (e.g., BatchNorm running stats) in sync or EMA eval will diverge
+        ema_buffers = dict(self.ema.named_buffers())
+        model_buffers = dict(model.named_buffers())
+        for name, ema_buf in ema_buffers.items():
+            if name in model_buffers:
+                ema_buf.copy_(model_buffers[name])
     
     def set_decay(self, decay: float):
         """Update decay rate"""
@@ -1156,7 +1164,7 @@ class HQAViT(nn.Module):
         
         self.stage1_blocks = nn.ModuleList([
             QuadBlockWithTokenLearner(config, self.global_bank, dpr[i], config.use_token_learner)
-            for i in range(0, 2)  # blocks 0-1
+            for i in range(2)  # blocks 0-1
         ])
         
         self.stage2_blocks = nn.ModuleList([
@@ -1166,12 +1174,12 @@ class HQAViT(nn.Module):
         
         self.stage3_blocks = nn.ModuleList([
             QuadBlockWithTokenLearner(config, self.global_bank, dpr[i], config.use_token_learner)
-            for i in range(4, 10)  # blocks 4-7 (4 blocks!)
+            for i in range(4, 6)  # blocks 4-7 (4 blocks!)
         ])
         
         self.stage4_blocks = nn.ModuleList([
             QuadBlockWithTokenLearner(config, self.global_bank, dpr[i], config.use_token_learner)
-            for i in range(10, 12)  # blocks 8-9
+            for i in range(6, 8)  # blocks 8-9
         ])
         
         self.norm = nn.LayerNorm(config.embed_dim)
