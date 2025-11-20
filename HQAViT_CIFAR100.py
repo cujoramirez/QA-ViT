@@ -87,7 +87,7 @@ class TrainingConfig:
     pin_memory: bool = True
     
     epochs: int = 300
-    warmup_epochs: int = 20
+    warmup_epochs: int = 10
     base_lr: float = 5e-4
     min_lr: float = 1e-5
     weight_decay: float = 0.05
@@ -108,11 +108,18 @@ class TrainingConfig:
     
     # EMA config
     use_ema: bool = True
-    ema_decay: float = 0.9999
-    ema_decay_warmup: float = 0.995
+    # Make EMA track model more responsively: lower final decay and stronger warmup
+    ema_decay: float = 0.9995
+    ema_decay_warmup: float = 0.99
     
     data_root: str = "./data"
     checkpoint_dir: str = "./checkpoints_hqavit"
+    # Mixup / CutMix settings
+    use_mixup: bool = True
+    mixup_alpha: float = 0.8
+    use_cutmix: bool = True
+    cutmix_alpha: float = 1.0
+    mix_prob: float = 0.5
 
 
 # ============================================================================
@@ -1293,6 +1300,33 @@ def get_cifar100_loaders(config: TrainingConfig):
 # ============================================================================
 # Training Functions
 # ============================================================================
+def rand_bbox(size, lam):
+    """Generate random bbox for CutMix
+
+    Args:
+        size: tensor size tuple (B, C, H, W)
+        lam: lambda sampled from beta
+    Returns:
+        x1, y1, x2, y2 (int coords)
+    """
+    W = size[3]
+    H = size[2]
+    cut_rat = np.sqrt(1.0 - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+
+    # uniform center
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    x1 = np.clip(cx - cut_w // 2, 0, W)
+    y1 = np.clip(cy - cut_h // 2, 0, H)
+    x2 = np.clip(cx + cut_w // 2, 0, W)
+    y2 = np.clip(cy + cut_h // 2, 0, H)
+
+    # convert to int
+    return int(x1), int(y1), int(x2), int(y2)
+
 def train_epoch(model, loader, optimizer, scheduler, scaler, config, epoch, monitor, model_ema=None):
     """Training loop with EMA"""
     model.train()
@@ -1304,11 +1338,38 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, config, epoch, moni
     
     for batch_idx, (inputs, targets) in enumerate(loader):
         inputs, targets = inputs.cuda(), targets.cuda()
-        
+
+        # Apply MixUp / CutMix augmentation on the batch with configured probability
+        use_mix = None
+        lam = 1.0
+        if config.use_cutmix and np.random.rand() < config.mix_prob:
+            # CutMix
+            rand_index = torch.randperm(inputs.size(0)).cuda()
+            bbx1, bby1, bbx2, bby2 = rand_bbox(inputs.size(), np.random.beta(config.cutmix_alpha, config.cutmix_alpha))
+            # x: [B, C, H, W]
+            inputs[:, :, bby1:bby2, bbx1:bbx2] = inputs[rand_index, :, bby1:bby2, bbx1:bbx2]
+            targets_a, targets_b = targets, targets[rand_index]
+            # adjust lambda to exactly match pixel ratio
+            W = inputs.size(3)
+            H = inputs.size(2)
+            lam = 1.0 - ((bbx2 - bbx1) * (bby2 - bby1) / float(W * H))
+            use_mix = 'cutmix'
+        elif config.use_mixup and np.random.rand() < config.mix_prob:
+            # MixUp
+            rand_index = torch.randperm(inputs.size(0)).cuda()
+            lam = np.random.beta(config.mixup_alpha, config.mixup_alpha)
+            inputs = (lam * inputs + (1 - lam) * inputs[rand_index])
+            targets_a, targets_b = targets, targets[rand_index]
+            use_mix = 'mixup'
+
         amp_dtype = torch.bfloat16 if config.amp_dtype == 'bfloat16' else torch.float16
         with autocast(enabled=config.use_amp, dtype=amp_dtype):
             outputs = model(inputs)
-            loss = criterion(outputs, targets) / config.gradient_accumulation_steps
+            if use_mix is None:
+                loss = criterion(outputs, targets) / config.gradient_accumulation_steps
+            else:
+                loss = lam * criterion(outputs, targets_a) + (1.0 - lam) * criterion(outputs, targets_b)
+                loss = loss / config.gradient_accumulation_steps
         
         scaler.scale(loss).backward()
         
