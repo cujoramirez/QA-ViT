@@ -1246,11 +1246,16 @@ def get_cifar100_loaders(config: TrainingConfig):
     mean = (0.5071, 0.4867, 0.4408)
     std = (0.2675, 0.2565, 0.2761)
     
+    # Stronger DeiT-style augmentation: keep spatial jitter + RandAugment,
+    # color jitter and random erasing for robustness on CIFAR-sized images.
     train_transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
+        transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+        transforms.RandAugment(num_ops=2, magnitude=9),
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
+        transforms.RandomErasing(p=0.25, scale=(0.02, 0.33), value='random')
     ])
     
     val_transform = transforms.Compose([
