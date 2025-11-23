@@ -86,13 +86,13 @@ class TrainingConfig:
     num_workers: int = 4
     pin_memory: bool = True
     
-    epochs: int = 300
-    warmup_epochs: int = 10
-    base_lr: float = 5e-4
-    min_lr: float = 1e-5
-    weight_decay: float = 0.05
+    epochs: int = 450
+    warmup_epochs: int = 20
+    base_lr: float = 6e-4
+    min_lr: float = 5e-6
+    weight_decay: float = 0.06
     
-    label_smoothing: float = 0.1
+    label_smoothing: float = 0.12
     
     max_grad_norm: float = 0.5
     grad_clip_mode: str = 'norm'
@@ -109,17 +109,17 @@ class TrainingConfig:
     # EMA config
     use_ema: bool = True
     # Make EMA track model more responsively: lower final decay and stronger warmup
-    ema_decay: float = 0.9995
+    ema_decay: float = 0.999
     ema_decay_warmup: float = 0.99
     
     data_root: str = "./data"
     checkpoint_dir: str = "./checkpoints_hqavit"
     # Mixup / CutMix settings
     use_mixup: bool = True
-    mixup_alpha: float = 0.8
+    mixup_alpha: float = 0.9
     use_cutmix: bool = True
     cutmix_alpha: float = 1.0
-    mix_prob: float = 0.5
+    mix_prob: float = 0.6
 
 
 # ============================================================================
@@ -816,36 +816,36 @@ class LMFAdapter(nn.Module):
         self.norm = nn.LayerNorm(embed_dim)
         self.act = nn.GELU()
     
-    def forward(self, F):
+    def forward(self, feat):
         """
         Args:
-            F: [B, C, H, W] CNN feature map
+            feat: [B, C, H, W] CNN feature map
         Returns:
             A: [B, N, embed_dim] adapted tokens
         """
-        B, C, H, W = F.shape
-        
+        B, C, H, W = feat.shape
+
         # Multi-scale branches
-        F1 = self.dwconv_3x3(F)  # local
-        F2 = self.dwconv_5x5(F)  # broader
-        F3 = F                    # identity
-        
+        f1 = self.dwconv_3x3(feat)  # local
+        f2 = self.dwconv_5x5(feat)  # broader
+        f3 = feat                   # identity
+
         # Concatenate
-        F_cat = torch.cat([F1, F2, F3], dim=1)  # [B, 3C, H, W]
-        
+        f_cat = torch.cat([f1, f2, f3], dim=1)  # [B, 3C, H, W]
+
         # Project to embed_dim
-        F_proj = self.proj(F_cat)  # [B, embed_dim, H, W]
-        
+        f_proj = self.proj(f_cat)  # [B, embed_dim, H, W]
+
         # Resize if needed
         if H != self.target_hw or W != self.target_hw:
-            F_proj = F.interpolate(F_proj, size=(self.target_hw, self.target_hw), 
+            f_proj = F.interpolate(f_proj, size=(self.target_hw, self.target_hw),
                                    mode='bilinear', align_corners=False)
-        
+
         # Reshape to tokens
-        A = F_proj.flatten(2).transpose(1, 2)  # [B, N, embed_dim]
+        A = f_proj.flatten(2).transpose(1, 2)  # [B, N, embed_dim]
         A = self.norm(A)
         A = self.act(A)
-        
+
         return A
 
 
@@ -1281,20 +1281,24 @@ class HQAViT(nn.Module):
 # Data Loading
 # ============================================================================
 def get_cifar100_loaders(config: TrainingConfig):
-    """CIFAR-100 data loading"""
+    """CIFAR-100 data loading with enhanced augmentation"""
     mean = (0.5071, 0.4867, 0.4408)
     std = (0.2675, 0.2565, 0.2761)
     
-    # Stronger DeiT-style augmentation: keep spatial jitter + RandAugment,
-    # color jitter and random erasing for robustness on CIFAR-sized images.
+    # Enhanced augmentation pipeline for 450 epochs:
+    # - Stronger spatial augmentation with rotation
+    # - More aggressive RandAugment (3 ops, magnitude 10)
+    # - Stronger color jitter with higher probability
+    # - More aggressive random erasing with varied aspect ratios
     train_transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
-        transforms.RandAugment(num_ops=2, magnitude=9),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomRotation(degrees=15),
+        transforms.RandomApply([transforms.ColorJitter(0.5, 0.5, 0.5, 0.15)], p=0.9),
+        transforms.RandAugment(num_ops=3, magnitude=10),
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
-        transforms.RandomErasing(p=0.25, scale=(0.02, 0.33), value='random')
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.4), ratio=(0.3, 3.3), value='random')
     ])
     
     val_transform = transforms.Compose([

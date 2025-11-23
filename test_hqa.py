@@ -10,6 +10,7 @@ import numpy as np
 import os
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix, classification_report
+from dataclasses import dataclass
 
 # Try to import the HQA model and configs
 try:
@@ -18,11 +19,23 @@ except ImportError:
     print("Error: Could not import from HQAViT_CIFAR100.py. Make sure the file exists in the same directory.")
     raise
 
+
+# Placeholder for finetune's FineTuneConfig so torch.load can unpickle checkpoints
+# that serialized an instance of that class from the finetune script's __main__.
+@dataclass
+class FineTuneConfig:
+    data_root: str = './data'
+
 # ============================================================================
 # Configuration
 # ============================================================================
-CHECKPOINT_PATH = r".\checkpoints_hqavit\best_model.pth"
-DATA_ROOT = TrainingConfig().data_root
+CLEAR_CHECK = None
+CHECKPOINT_PATH = os.path.join("checkpoints_finetuned", "best_finetuned.pth")
+# Prefer data_root from TrainingConfig (pretraining), but allow overriding from checkpoint
+try:
+    DATA_ROOT = TrainingConfig().data_root
+except Exception:
+    DATA_ROOT = "./data"
 BATCH_SIZE = 128
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -35,33 +48,48 @@ def load_model(checkpoint_path: str = CHECKPOINT_PATH, device: torch.device = DE
     If checkpoint not found, returns a freshly initialized model on device.
     Handles common state-dict prefixes (e.g., `_orig_mod.` from torch.compile).
     """
-    config = HQAViTConfig()
-    model = HQAViT(config).to(device)
-    model.eval()
-
+    # Load checkpoint early so we can build model from saved config if present
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found at {checkpoint_path}. Returning uninitialized model.")
+        config = HQAViTConfig()
+        model = HQAViT(config).to(device)
+        model.eval()
         return model
 
     print(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    # Support common key names
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    elif 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
+    # If checkpoint contains a saved model_config, prefer it
+    model_cfg = checkpoint.get('model_config', None)
+    if model_cfg is None:
+        config = HQAViTConfig()
     else:
-        # Could be a full model saved directly
+        # model_cfg may be an instance of HQAViTConfig or a dict
+        try:
+            if isinstance(model_cfg, dict):
+                config = HQAViTConfig(**model_cfg)
+            else:
+                config = model_cfg
+        except Exception:
+            config = HQAViTConfig()
+
+    model = HQAViT(config).to(device)
+    model.eval()
+
+    # Support common key names
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    elif isinstance(checkpoint, nn.Module):
+        # whole model saved
+        return checkpoint.to(device)
+    else:
+        # Unknown checkpoint format
         state_dict = None
 
     if state_dict is None:
-        try:
-            model = checkpoint if isinstance(checkpoint, nn.Module) else model
-            print("Loaded checkpoint appears to be a full model object. Using it as-is.")
-            return model
-        except Exception:
-            raise RuntimeError("Unable to find state dict in checkpoint.")
+        raise RuntimeError('Unable to find a state dict in checkpoint.')
 
     # Fix keys from torch.compile or DataParallel
     new_state = {}
@@ -74,6 +102,19 @@ def load_model(checkpoint_path: str = CHECKPOINT_PATH, device: torch.device = DE
             new_state[k] = v
 
     model.load_state_dict(new_state, strict=False)
+
+    # If checkpoint contains training/config info, update DATA_ROOT if available
+    global DATA_ROOT
+    chk_cfg = checkpoint.get('config', None)
+    if chk_cfg is not None:
+        try:
+            # config could be dataclass instance or dict
+            if hasattr(chk_cfg, 'data_root'):
+                DATA_ROOT = chk_cfg.data_root
+            elif isinstance(chk_cfg, dict) and 'data_root' in chk_cfg:
+                DATA_ROOT = chk_cfg['data_root']
+        except Exception:
+            pass
 
     print(f"Model loaded (epoch={checkpoint.get('epoch', 'unknown')}, val_acc={checkpoint.get('val_acc', 'unknown')})")
     return model

@@ -109,7 +109,7 @@ class TrainingConfig:
     # EMA config
     use_ema: bool = True
     # Make EMA track model more responsively: lower final decay and stronger warmup
-    ema_decay: float = 0.9995
+    ema_decay: float = 0.999
     ema_decay_warmup: float = 0.99
     
     data_root: str = "./data"
