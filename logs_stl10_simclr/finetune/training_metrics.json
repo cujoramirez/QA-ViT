@@ -1,0 +1,14 @@
+{
+  "history": {
+    "epoch": [],
+    "train_loss": [],
+    "train_acc": [],
+    "val_loss": [],
+    "val_acc": [],
+    "lr": [],
+    "epoch_time": []
+  },
+  "best_val_acc": 0.0,
+  "best_loss": Infinity,
+  "total_time": 0.7067253589630127
+}
